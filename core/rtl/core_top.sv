@@ -1,92 +1,126 @@
-module core_top(
-  input  logic        clk,
-  input  logic        rst_n,
-  // observe-only outputs for tests
-  output logic [31:0] pc_o,
-  output logic [31:0] instr_o,
-  output logic [6:0]  opcode_o,
-  output logic [2:0]  funct3_o,
-  output logic [4:0]  rs1_o,
-  output logic [4:0]  rd_o,
-  output logic [31:0] imm_i_o,
-  output logic [31:0] wb_data_o,
-  output logic [31:0] x1_o,
-  output logic [31:0] x2_o,
-  output logic [31:0] x3_o
+module core_top (
+    input  logic        clk,
+    input  logic        rst_n,
+
+    // test visibility / debug taps
+    output logic [31:0] pc_q,
+    output logic [31:0] instr_o,
+    output logic [31:0] wb_data_o,
+    output logic [31:0] x1_o,
+    output logic [31:0] x2_o,
+    output logic [31:0] x3_o
 );
-  // FETCH
-  logic [31:0] pc_q, next_pc;
-  assign next_pc = pc_q + 32'd4;
-  pc        u_pc   (.clk, .rst_n, .next_pc(next_pc), .pc_q(pc_q));
-  instr_mem u_imem (.addr(pc_q), .instr(instr_o));
-  assign pc_o = pc_q;
+    // === Fetch ===
+    logic        branch_taken;
+    logic [31:0] branch_target;
 
-  // DECODE
-  logic [6:0] opcode, funct7;
-  logic [2:0] funct3;
-  logic [4:0] rs1, rs2, rd;
-  logic       reg_we, alu_src_imm;
-  logic [2:0] alu_op;
-  logic       mem_read, mem_write, mem_to_reg;
+    pc u_pc (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .branch_taken (branch_taken),
+        .branch_target(branch_target),
+        .pc_q         (pc_q)
+    );
 
-  control u_ctrl(
-    .instr   (instr_o),
-    .opcode  (opcode),
-    .funct3  (funct3),
-    .funct7  (funct7),
-    .rs1     (rs1),
-    .rs2     (rs2),
-    .rd      (rd),
-    .reg_we,
-    .alu_src_imm,
-    .alu_op,
-    .mem_read,
-    .mem_write,
-    .mem_to_reg
-  );
+    instr_mem u_imem (
+        .addr  (pc_q),
+        .instr (instr_o)
+    );
 
-  // IMMEDIATES
-  logic [31:0] imm_i, imm_s, imm_b;
-  imm_gen u_imm(.instr(instr_o), .imm_i(imm_i), .imm_s(imm_s), .imm_b(imm_b));
+    // === Decode fields ===
+    logic [6:0]  opcode;
+    logic [2:0]  funct3;
+    logic [4:0]  rs1, rs2, rd;
 
-  // REGISTER FILE
-  logic [31:0] rd1, rd2;
-  regfile u_rf(
-    .clk, .we(reg_we),
-    .rs1, .rs2, .rd,
-    .wd (wb_data_o),
-    .rd1, .rd2,
-    .x1_val(x1_o),
-    .x2_val(x2_o),
-    .x3_val(x3_o)
-  );
+    assign opcode = instr_o[6:0];
+    assign rd     = instr_o[11:7];
+    assign funct3 = instr_o[14:12];
+    assign rs1    = instr_o[19:15];
+    assign rs2    = instr_o[24:20];
 
-  // EXECUTE (ALU addr calc)
-  logic [31:0] op_a, op_b, alu_y;
-  assign op_a = rd1;
-  // address immediate: I-type for LW, S-type for SW
-  wire [31:0] addr_imm = (mem_write) ? imm_s : imm_i;
-  assign op_b = (alu_src_imm) ? addr_imm : rd2;
+    // === Immediates ===
+    logic [31:0] imm_i, imm_s, imm_b;
+    imm_gen u_imm (
+        .instr (instr_o),
+        .imm_i (imm_i),
+        .imm_s (imm_s),
+        .imm_b (imm_b)
+    );
 
-  alu u_alu(.a(op_a), .b(op_b), .op(alu_op), .y(alu_y));
+    // === Control ===
+    logic        reg_we;
+    logic        alu_src_imm;
+    logic [2:0]  alu_op;
+    logic        mem_read;
+    logic        mem_write;
+    logic        mem_to_reg;
+    logic        is_branch;
 
-  // DATA MEMORY
-  logic [31:0] dmem_rdata;
-  data_mem u_dmem(
-    .clk    (clk),
-    .we     (mem_write),
-    .addr   (alu_y),
-    .wdata  (rd2),        // store data comes from rs2
-    .rdata  (dmem_rdata)  // load data returns here
-  );
+    control u_ctrl (
+        .opcode     (opcode),
+        .reg_we     (reg_we),
+        .alu_src_imm(alu_src_imm),
+        .alu_op     (alu_op),
+        .mem_read   (mem_read),
+        .mem_write  (mem_write),
+        .mem_to_reg (mem_to_reg),
+        .is_branch  (is_branch)
+    );
 
-  // WRITEBACK MUX
-  assign wb_data_o = (mem_to_reg) ? dmem_rdata : alu_y;
+    // === Register file ===
+    logic [31:0] rd1, rd2, wb_data;
+    regfile u_rf (
+        .clk   (clk),
+        .we    (reg_we),
+        .rs1   (rs1),
+        .rs2   (rs2),
+        .rd    (rd),
+        .wd    (wb_data),
+        .rd1   (rd1),
+        .rd2   (rd2),
+        .x1_val(x1_o),
+        .x2_val(x2_o),
+        .x3_val(x3_o)
+    );
 
-  // expose
-  assign opcode_o = opcode;
-  assign funct3_o = funct3;
-  assign rs1_o    = rs1;
-  assign rd_o     = rd;
-  assign imm_i_o  = imm_i;
+    // === ALU ===
+    logic [31:0] alu_b, alu_y;
+    always_comb begin
+        // choose immediate kind for ALU b:
+        // - SW uses S-imm (store offset)
+        // - otherwise immediate operations use I-imm
+        if (alu_src_imm) begin
+            if (mem_write)
+                alu_b = imm_s;
+            else
+                alu_b = imm_i;
+        end else begin
+            alu_b = rd2;
+        end
+    end
+
+    alu u_alu (
+        .a  (rd1),
+        .b  (alu_b),
+        .op (alu_op),
+        .y  (alu_y)
+    );
+
+    // === Data memory ===
+    logic [31:0] mem_data;
+    data_mem u_dmem (
+        .clk   (clk),
+        .addr  (alu_y),
+        .we    (mem_write),
+        .wdata (rd2),
+        .rdata (mem_data)
+    );
+
+    // === Write-back mux ===
+    assign wb_data   = mem_to_reg ? mem_data : alu_y;
+    assign wb_data_o = wb_data;
+
+    // === Branch decision (BEQ only: funct3==3'b000) ===
+    assign branch_taken  = is_branch && (funct3 == 3'b000) && (rd1 == rd2);
+    assign branch_target = pc_q + imm_b;
 endmodule

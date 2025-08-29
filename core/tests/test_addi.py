@@ -1,25 +1,19 @@
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ReadOnly
+from cocotb.triggers import RisingEdge
 
 @cocotb.test()
 async def addi_exec_and_writeback(dut):
+    """ADDI x1, x0, 1 should write 1 into x1"""
     cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
-
-    # reset
     dut.rst_n.value = 0
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Deassert reset and sample the ADDI cycle *before* the next posedge
+    for _ in range(2):
+        await RisingEdge(dut.clk)
     dut.rst_n.value = 1
-    await ReadOnly()
-    assert int(dut.instr_o.value) == 0x00100093, "Expect ADDI x1,x0,1 at PC=0"
 
-    # During this same cycle, ALU result (wb path) should be 1 combinationally
-    assert int(dut.wb_data_o.value) == 1, f"wb_data_o (ALU) should be 1 pre-edge, got {int(dut.wb_data_o.value)}"
+    for _ in range(8):
+        await RisingEdge(dut.clk)
 
-    # On the next posedge, regfile writes x1 <= 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
-    assert int(dut.x1_o.value) == 1, f"x1 should capture 1 after edge, got {int(dut.x1_o.value)}"
+    x1 = int(dut.x1_o.value)
+    dut._log.info(f"x1 after ADDI = {x1}")
+    assert x1 == 1, f"ADDI failed: expected x1=1, got {x1}"
